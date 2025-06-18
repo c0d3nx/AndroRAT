@@ -86,7 +86,21 @@ Usage:
     -i, --ip                Listner IP address
     -p, --port              Listner port number
 ```
-After running the `shell` mode you will get an interpreter of the device  
+After running the `shell` mode you will get an interpreter of the device 
+
+### Multi-client functionality
+There is now a top menu that is used to view and attach to sessions. 
+
+```
+    list                       --> show all active sessions
+    attach N                   --> attach to session N (from list)
+    help                       --> show help
+    exit                       --> shutdown listener and close connections
+```
+
+When attached to session you can run interpreter commands and drop into shell.
+
+**Note:** This is a quick and dirty patch of `utils.py` to add multi-client support. It is far from perfect
 
 Commands which can run on the interpreter
 ```
@@ -139,12 +153,22 @@ In the sh shell there are some sub commands
 </p>
 ------------------------------------------------------------------------------------------------------------------------------
 
+* Multi-client functionality
+<p align="center">
+  <img src="Screenshots/7.png" width="800"/>
+</p>
+
+<p align="center">
+  <img src="Screenshots/8.png" width="800"/>
+</p>
+------------------------------------------------------------------------------------------------------------------------------
+
 ## Supporters:
 [![rayep](https://avatars.githubusercontent.com/u/40718616?v=4&s=60)](https://github.com/rayep)
 
 ## TODO
 * ~~Ngrok support~~
-* Set up multi client
+* ~~Set up multi client~~
 * Add screenshot command
 
 
